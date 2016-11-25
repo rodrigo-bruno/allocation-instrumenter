@@ -80,7 +80,7 @@ public class AllocationRecorder {
   }
 
   // Used for reentrancy checks
-  private static final ThreadLocal<Boolean> recordingAllocation = new ThreadLocal<Boolean>();
+  public static final ThreadLocal<Boolean> recordingAllocation = new ThreadLocal<Boolean>();
 
   // Stores the object sizes for the last ~100000 encountered classes
   private static final ForwardingMap<Class<?>, Long> classSizesMap =
