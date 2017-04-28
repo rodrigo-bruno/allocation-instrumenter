@@ -22,6 +22,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.nio.ByteBuffer;
 
 import com.google.common.collect.ForwardingMap;
 import com.google.common.collect.MapMaker;
@@ -48,9 +51,36 @@ public class AllocationRecorder {
       @Override
       public void run() {
         setInstrumentation(null);
+        stopWorkers();
       }
     });
   }
+
+  // Debug flags
+  protected static final boolean DEBUG = true;
+  protected static final boolean DEBUG_STATS = true;
+  protected static final boolean DEBUG_ALLOCS = true;
+  protected static final boolean DEBUG_WORKER = true;
+  protected static final boolean DEBUG_WARNS = true;
+
+  // Initial size (in bytes) for object identifier buffer. The actual size of
+  // the buffer in doubled every time the limit is reached (BUFF_SIZE_MAX).
+  protected static final int BUFF_SIZE = 1024;
+
+  // Final size (in bytes) for object identifier buffer.
+  protected static final int BUFF_SIZE_MAX = 1024*1024;
+
+  // Size of the allocation record queue.
+  protected static final int QUEUE_SIZE = 1024*1024;
+
+  // Number of background threads. These threads process allocation records.
+  protected static final int WORKER_THREADS = 2;
+
+  // Wether to use offheap or not for allocation statistics.
+  protected static final boolean OFFHEAP = false;
+
+  // Where alloc statistics are going to be placed.
+  protected static String OUTPUT_DIR = "/tmp";
 
   // See the comment above the addShutdownHook in the static block above
   // for why this is volatile.
@@ -64,23 +94,71 @@ public class AllocationRecorder {
     instrumentation = inst;
   }
 
-  // Mostly because, yes, arrays are faster than collections.
-  private static volatile Sampler [] additionalSamplers;
-
-  // Protects mutations of additionalSamplers.  Reads are okay because
-  // the field is volatile, so anyone who reads additionalSamplers
-  // will get a consistent view of it.
-  private static final Object samplerLock = new Object();
-
-  // List of packages that can add samplers.
-  private static final List<String> classNames = new ArrayList<String>();
-
-  static {
-    classNames.add("com.google.monitoring.runtime.");
-  }
-
   // Used for reentrancy checks
   public static final ThreadLocal<Boolean> recordingAllocation = new ThreadLocal<Boolean>();
+
+  // Queue used to send tasks to background threads.
+  protected static final ArrayBlockingQueue<AllocationRecord> queue;
+
+  static {
+    queue = new ArrayBlockingQueue<AllocationRecord>(QUEUE_SIZE);
+  }
+
+  // Map containing alloc site id -> obj ids
+  protected static final ConcurrentHashMap<Integer, ByteBuffer> allocs;
+
+  static {
+    allocs = new ConcurrentHashMap<Integer, ByteBuffer>();
+  }
+
+  // Map containing alloc site id -> strack trace
+  protected static final ConcurrentHashMap<Integer, StackTraceElement[]> traces;
+
+  static {
+    traces = new ConcurrentHashMap<Integer, StackTraceElement[]>();
+  }
+
+
+  // Worker threads that will process allocations in background.
+  protected static final List<Thread> workers;
+
+  static {
+    workers = new ArrayList<Thread>(WORKER_THREADS);
+    for (int i = 0; i < WORKER_THREADS; i++) {
+      Thread t = new AllocationWorker();
+      t.start();
+      workers.add(t);
+    }
+  }
+
+  private static void stopWorkers() {
+    for (Thread t : workers) {
+      try {
+        t.interrupt();
+        t.join();
+      }
+      catch (Exception e ) {
+        if (DEBUG || DEBUG_WARNS) {
+          System.err.println("ERR: Unable join " + t);
+          e.printStackTrace();
+        }
+      }
+    }
+
+   try {
+      AllocStatisticsWritter.writeStatistics(allocs, traces);
+    }
+    catch (Exception e) {
+      if (DEBUG || DEBUG_WARNS) {
+        System.err.println("ERR: Unable to write statistics:");
+        e.printStackTrace();
+      }
+    }
+  }
+
+  public static synchronized void LOG(String msg) {
+    System.err.println(msg);
+  }
 
   // Stores the object sizes for the last ~100000 encountered classes
   private static final ForwardingMap<Class<?>, Long> classSizesMap =
@@ -132,54 +210,6 @@ public class AllocationRecorder {
   };
 
   /**
-   * Adds a {@link Sampler} that will get run <b>every time an allocation is
-   * performed from Java code</b>.  Use this with <b>extreme</b> judiciousness!
-   *
-   * @param sampler  The sampler to add.
-   */
-  public static void addSampler(Sampler sampler) {
-    synchronized (samplerLock) {
-      Sampler[] samplers = additionalSamplers;
-      /* create a new list of samplers from the old, adding this sampler */
-      if (samplers != null) {
-        Sampler [] newSamplers = new Sampler[samplers.length + 1];
-        System.arraycopy(samplers, 0, newSamplers, 0, samplers.length);
-        newSamplers[samplers.length] = sampler;
-        additionalSamplers = newSamplers;
-      } else {
-        Sampler[] newSamplers = new Sampler[1];
-        newSamplers[0] = sampler;
-        additionalSamplers = newSamplers;
-      }
-    }
-  }
-
-  /**
-   * Removes the given {@link Sampler}.
-   *
-   * @param sampler  The sampler to remove.
-   */
-  public static void removeSampler(Sampler sampler) {
-    synchronized (samplerLock) {
-      Sampler[] samplers = additionalSamplers;
-      int samplerCount = samplers.length;
-      for (Sampler s : samplers) {
-        if (s.equals(sampler)) {
-          samplerCount--;
-        }
-      }
-      Sampler[] newSamplers = new Sampler[samplerCount];
-      int i = 0;
-      for (Sampler s : samplers) {
-        if (!s.equals(sampler)) {
-          newSamplers[i++] = s;
-        }
-      }
-      additionalSamplers = newSamplers;
-    }
-  }
-
-  /**
    * Returns the size of the given object. If the object is not an array, we
    * check the cache first, and update it as necessary.
    *
@@ -229,10 +259,6 @@ public class AllocationRecorder {
       recordingAllocation.set(Boolean.TRUE);
     }
 
-    // NB: This could be smaller if the defaultSampler were merged with the
-    // optional samplers.  However, you don't need the optional samplers in
-    // the common case, so I thought I'd save some space.
-
     // Copy value into local variable to prevent NPE that occurs when
     // instrumentation field is set to null by this class's shutdown hook
     // after another thread passed the null check but has yet to call
@@ -241,16 +267,13 @@ public class AllocationRecorder {
     if (instr != null) {
       // calling getObjectSize() could be expensive,
       // so make sure we do it only once per object
-      long objectSize = -1;
+      long objectSize = getObjectSize(newObj, (count >= 0), instr);
+      AllocationRecord ar = new AllocationRecord(System.identityHashCode(newObj));
+      boolean inserted = AllocationRecorder.queue.offer(ar);
 
-      Sampler[] samplers = additionalSamplers;
-      if (samplers != null) {
-        if (objectSize < 0) {
-          objectSize = getObjectSize(newObj, (count >= 0), instr);
-        }
-        for (Sampler sampler : samplers) {
-          sampler.sampleAllocation(count, desc, newObj, objectSize);
-        }
+      if (DEBUG || DEBUG_ALLOCS) {
+        LOG(String.format("st=%d\tobj=%d\tinserted=%s\tcount=%d\tdesc=%s\tsize=%d",
+           ar.getTraceHash(), ar.getObjHash(), inserted, count, desc, objectSize));
       }
     }
 
