@@ -15,6 +15,8 @@
  */
 package com.google.monitoring.runtime.instrumentation;
 
+import com.google.monitoring.runtime.instrumentation.AllocationRecorder;
+
 public class AllocationRecord extends Throwable {
     private final int objHash;
     private boolean isSTHashed;
@@ -33,8 +35,8 @@ public class AllocationRecord extends Throwable {
               result = 37*result + ste.hashCode();
           }
         } catch (Exception e) {
-          if (DEBUG || DEBUG_WARNS) {
-            System.err.println("ERR: hash stack trace:");
+          if (AllocationRecorder.DEBUG || AllocationRecorder.DEBUG_WARNS) {
+            AllocationRecorder.LOG("ERR: hash stack trace:");
             e.printStackTrace();
           }
         }

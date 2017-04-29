@@ -51,7 +51,9 @@ public class AllocationRecorder {
       @Override
       public void run() {
         setInstrumentation(null);
+        LOG("Stopping worker threads...");
         stopWorkers();
+        LOG("Stopping worker threads... Done");
       }
     });
   }
@@ -139,7 +141,7 @@ public class AllocationRecorder {
       }
       catch (Exception e ) {
         if (DEBUG || DEBUG_WARNS) {
-          System.err.println("ERR: Unable join " + t);
+          LOG("ERR: Unable join " + t);
           e.printStackTrace();
         }
       }
@@ -150,14 +152,14 @@ public class AllocationRecorder {
     }
     catch (Exception e) {
       if (DEBUG || DEBUG_WARNS) {
-        System.err.println("ERR: Unable to write statistics:");
+        LOG("ERR: Unable to write statistics:");
         e.printStackTrace();
       }
     }
   }
 
   public static synchronized void LOG(String msg) {
-    System.err.println(msg);
+    System.err.println("[olr-ar] " + msg);
   }
 
   // Stores the object sizes for the last ~100000 encountered classes

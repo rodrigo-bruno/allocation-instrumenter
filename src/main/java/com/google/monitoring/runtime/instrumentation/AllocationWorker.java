@@ -73,7 +73,7 @@ public class AllocationWorker extends Thread {
                 }
             }
             catch (InterruptedException ie) {
-                // Finished, simply exit.
+                return;
             }
             catch (Exception e) {
                 e.printStackTrace();
