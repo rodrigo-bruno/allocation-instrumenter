@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import com.google.monitoring.runtime.instrumentation.AllocationRecorder;
+
 /**
  * Instruments bytecodes that allocate heap memory to call a recording hook.
  * This will add a static invocation to a recorder function to any bytecode that
@@ -118,6 +120,9 @@ public class AllocationInstrumenter implements ClassFileTransformer {
     if (!args.contains("manualOnly")) {
       bootstrap(inst);
     }
+
+    AllocationRecorder.OUTPUT_DIR = args.get(0);
+
   }
 
   private static void bootstrap(Instrumentation inst) {
