@@ -15,8 +15,6 @@
  */
 package com.google.monitoring.runtime.instrumentation;
 
-import com.google.monitoring.runtime.instrumentation.AllocationRecorder;
-
 public class AllocationRecord extends Throwable {
     private final int objHash;
     private boolean isSTHashed;

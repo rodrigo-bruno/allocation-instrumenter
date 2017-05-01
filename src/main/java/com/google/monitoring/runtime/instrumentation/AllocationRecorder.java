@@ -16,18 +16,9 @@
 
 package com.google.monitoring.runtime.instrumentation;
 
+import java.io.FileOutputStream;
+import java.io.ObjectOutputStream;
 import java.lang.instrument.Instrumentation;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.nio.ByteBuffer;
-
-import com.google.common.collect.ForwardingMap;
-import com.google.common.collect.MapMaker;
 
 /**
  * The logic for recording allocations, called from bytecode rewritten by
@@ -51,9 +42,6 @@ public class AllocationRecorder {
       @Override
       public void run() {
         setInstrumentation(null);
-        LOG("Stopping worker threads...");
-        stopWorkers();
-        LOG("Stopping worker threads... Done");
       }
     });
   }
@@ -65,21 +53,8 @@ public class AllocationRecorder {
   protected static final boolean DEBUG_WORKER = true;
   protected static final boolean DEBUG_WARNS = true;
 
-  // Initial size (in bytes) for object identifier buffer. The actual size of
-  // the buffer in doubled every time the limit is reached (BUFF_SIZE_MAX).
-  protected static final int BUFF_SIZE = 1024;
-
-  // Final size (in bytes) for object identifier buffer.
-  protected static final int BUFF_SIZE_MAX = 1024*1024;
-
-  // Size of the allocation record queue.
-  protected static final int QUEUE_SIZE = 1024*1024;
-
-  // Number of background threads. These threads process allocation records.
-  protected static final int WORKER_THREADS = 2;
-
-  // Wether to use offheap or not for allocation statistics.
-  protected static final boolean OFFHEAP = false;
+  // TODO - comment on this.
+  protected static final int BUFF_SIZE = 1024*1024;
 
   // Where alloc statistics are going to be placed.
   protected static String OUTPUT_DIR = "/tmp";
@@ -99,140 +74,11 @@ public class AllocationRecorder {
   // Used for reentrancy checks
   public static final ThreadLocal<Boolean> recordingAllocation = new ThreadLocal<Boolean>();
 
-  // Queue used to send tasks to background threads.
-  protected static final ArrayBlockingQueue<AllocationRecord> queue;
-
-  static {
-    queue = new ArrayBlockingQueue<AllocationRecord>(QUEUE_SIZE);
-  }
-
-  // Map containing alloc site id -> obj ids
-  protected static final ConcurrentHashMap<Integer, ByteBuffer> allocs;
-
-  static {
-    allocs = new ConcurrentHashMap<Integer, ByteBuffer>();
-  }
-
-  // Map containing alloc site id -> strack trace
-  protected static final ConcurrentHashMap<Integer, StackTraceElement[]> traces;
-
-  static {
-    traces = new ConcurrentHashMap<Integer, StackTraceElement[]>();
-  }
-
-
-  // Worker threads that will process allocations in background.
-  protected static final List<Thread> workers;
-
-  static {
-    workers = new ArrayList<Thread>(WORKER_THREADS);
-    for (int i = 0; i < WORKER_THREADS; i++) {
-      Thread t = new AllocationWorker();
-      t.start();
-      workers.add(t);
-    }
-  }
-
-  private static void stopWorkers() {
-    for (Thread t : workers) {
-      try {
-        t.interrupt();
-        t.join();
-      }
-      catch (Exception e ) {
-        if (DEBUG || DEBUG_WARNS) {
-          LOG("ERR: Unable join " + t);
-          e.printStackTrace();
-        }
-      }
-    }
-
-   try {
-      AllocStatisticsWritter.writeStatistics(allocs, traces);
-    }
-    catch (Exception e) {
-      if (DEBUG || DEBUG_WARNS) {
-        LOG("ERR: Unable to write statistics:");
-        e.printStackTrace();
-      }
-    }
-  }
+  // Each thread contains an object stream.
+  public static final ThreadLocal<ObjectOutputStream> outputStream = new ThreadLocal<ObjectOutputStream>();
 
   public static synchronized void LOG(String msg) {
     System.err.println("[olr-ar] " + msg);
-  }
-
-  // Stores the object sizes for the last ~100000 encountered classes
-  private static final ForwardingMap<Class<?>, Long> classSizesMap =
-    new ForwardingMap<Class<?>, Long>() {
-      private final ConcurrentMap<Class<?>, Long> map = new MapMaker()
-          .weakKeys()
-          .makeMap();
-
-      @Override public Map<Class<?>, Long> delegate() {
-        return map;
-      }
-
-      // The approximate maximum size of the map
-      private static final int MAX_SIZE = 100000;
-
-      // The approximate current size of the map; since this is not an AtomicInteger
-      // and since we do not synchronize the updates to this field, it will only be
-      // an approximate size of the map; it's good enough for our purposes though,
-      // and not synchronizing the updates saves us some time
-      private int approximateSize = 0;
-
-      @Override
-      public Long put(Class<?> key, Long value) {
-        // if we have too many elements, delete about 10% of them
-        // this is expensive, but needs to be done to keep the map bounded
-        // we also need to randomize the elements we delete: if we remove the same
-        // elements all the time, we might end up adding them back to the map
-        // immediately after, and then remove them again, then add them back, etc.
-        // which will cause this expensive code to be executed too often
-        if (approximateSize >= MAX_SIZE) {
-          for (Iterator<Class<?>> it = keySet().iterator(); it.hasNext(); ) {
-            it.next();
-            if (Math.random() < 0.1) {
-              it.remove();
-            }
-          }
-
-          // get the exact size; another expensive call, but we need to correct
-          // approximateSize every once in a while, or the difference between
-          // approximateSize and the actual size might become significant over time;
-          // the other solution is synchronizing every time we update approximateSize,
-          // which seems even more expensive
-          approximateSize = size();
-        }
-
-        approximateSize++;
-        return super.put(key, value);
-    }
-  };
-
-  /**
-   * Returns the size of the given object. If the object is not an array, we
-   * check the cache first, and update it as necessary.
-   *
-   * @param obj the object.
-   * @param isArray indicates if the given object is an array.
-   * @param instr the instrumentation object to use for finding the object size
-   * @return the size of the given object.
-   */
-  private static long getObjectSize(Object obj, boolean isArray, Instrumentation instr) {
-    if (isArray) {
-      return instr.getObjectSize(obj);
-    }
-
-    Class<?> clazz = obj.getClass();
-    Long classSize = classSizesMap.get(clazz);
-    if (classSize == null) {
-      classSize = instr.getObjectSize(obj);
-      classSizesMap.put(clazz, classSize);
-    }
-
-    return classSize;
   }
 
   public static void recordAllocation(Class<?> cls, Object newObj) {
@@ -267,15 +113,30 @@ public class AllocationRecorder {
     // instrumentation.getObjectSize()
     Instrumentation instr = instrumentation;
     if (instr != null) {
-      // calling getObjectSize() could be expensive,
-      // so make sure we do it only once per object
-      long objectSize = getObjectSize(newObj, (count >= 0), instr);
+        // TODO - check if we can strip down the amount of serialized data.
+        // TODO - maintain a list oos to close?
       AllocationRecord ar = new AllocationRecord(System.identityHashCode(newObj));
-      boolean inserted = AllocationRecorder.queue.offer(ar);
+      ObjectOutputStream oos = outputStream.get();
+      try {
+        if (oos == null) {
+          oos = new ObjectOutputStream(
+                  new FileOutputStream(
+                          OUTPUT_DIR + "/" + Thread.currentThread().getId(),
+                          true));
+          outputStream.set(oos);
+        }
+        oos.writeObject(ar);
+      } catch (Exception e) {
+        if (DEBUG || DEBUG_WARNS) {
+          LOG(String.format("ERR: unable to write to output stream for thread %d",
+           Thread.currentThread().getId()));
+          e.printStackTrace();
+        }
+      }
 
       if (DEBUG || DEBUG_ALLOCS) {
-        LOG(String.format("st=%d\tobj=%d\tinserted=%s\tcount=%d\tdesc=%s\tsize=%d",
-           ar.getTraceHash(), ar.getObjHash(), inserted, count, desc, objectSize));
+        LOG(String.format("st=%d\tobj=%d\tcount=%d\tdesc=%s",
+           ar.getTraceHash(), ar.getObjHash(), count, desc));
       }
     }
 
