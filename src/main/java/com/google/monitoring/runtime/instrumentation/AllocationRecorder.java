@@ -21,6 +21,8 @@ import java.io.ObjectOutputStream;
 import java.lang.instrument.Instrumentation;
 import java.util.List;
 import java.util.LinkedList;
+import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The logic for recording allocations, called from bytecode rewritten by
@@ -43,10 +45,17 @@ public class AllocationRecorder {
     Runtime.getRuntime().addShutdownHook(new Thread() {
       @Override
       public void run() {
-        LOG("running shutdown hook...");
+        if (DEBUG) {
+          LOG("running shutdown hook...");
+        }
+
         setInstrumentation(null);
-        closeOutputSteams();
-        LOG("running shutdown hook...Done");
+        flushAllocStreams();
+        flushTraces();
+
+        if (DEBUG) {
+          LOG("running shutdown hook...Done");
+        }
       }
     });
   }
@@ -56,7 +65,7 @@ public class AllocationRecorder {
   protected static final boolean DEBUG_ALLOCS = true;
   protected static final boolean DEBUG_WARNS = true;
 
-  // Where alloc statistics are going to be placed.
+  // Where alloc statistics are going to be placed by default.
   protected static String OUTPUT_DIR = "/tmp";
 
   // See the comment above the addShutdownHook in the static block above
@@ -72,41 +81,84 @@ public class AllocationRecorder {
   }
 
   // Used for reentrancy checks
-  public static final ThreadLocal<Boolean> recordingAllocation = new ThreadLocal<Boolean>();
+  public static final ThreadLocal<Boolean> recordingAllocation =
+          new ThreadLocal<Boolean>();
 
-  // Each thread contains an object stream.
-  public static final ThreadLocal<ObjectOutputStream> outputStream = new ThreadLocal<ObjectOutputStream>();
+  // Thread-local stream for writting <obj ID, trace ID>.
+  public static final ThreadLocal<ObjectOutputStream> allocStream =
+          new ThreadLocal<ObjectOutputStream>();
 
-  public static final List<ObjectOutputStream> outputStreams;
+  // List of thread-local streams that need to be flushed when the VM quits.
+  // Note that this should not be a map indexed by thread ID because the thread
+  // ID might be reused.
+  public static final List<ObjectOutputStream> allocStreams =
+          new LinkedList<ObjectOutputStream>();
 
-  static {
-    outputStreams = new LinkedList<ObjectOutputStream>();
-  }
+  // Global map for traces. Multiple threads might allocate multiple objects
+  // through the same code location, thus reusing the same trace.
+  public static final ConcurrentHashMap<Integer, StackTraceElement[]> traces =
+          new ConcurrentHashMap<Integer, StackTraceElement[]>();
 
-  public static void addOutputStream(ObjectOutputStream oos) {
-    synchronized (outputStreams) {
-      outputStreams.add(oos);
+  public static void addAllocStreams(ObjectOutputStream oos) {
+    synchronized (allocStreams) {
+      allocStreams.add(oos);
     }
   }
 
-  public static void closeOutputSteams() {
-    synchronized (outputStreams) {
-      for (ObjectOutputStream oos : outputStreams) {
+  public static void flushTraces() {
+    String output = OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId();
+    try {
+      ObjectOutputStream oos =
+            new ObjectOutputStream(
+                  new FileOutputStream(output));
+      for (Entry<Integer, StackTraceElement[]> e : traces.entrySet()) {
+        oos.writeObject(e);
+      }
+      oos.flush();
+      oos.close();
+    }
+    catch (Exception e) {
+      if (DEBUG || DEBUG_WARNS) {
+        LOG("ERR: unable to flush traces");
+        e.printStackTrace();
+      }
+    }
+  }
+
+  public static void flushAllocStreams() {
+    synchronized (allocStreams) {
+      for (ObjectOutputStream oos : allocStreams) {
         try {
           oos.flush();
           oos.close();
         }
         catch (Exception e) {
           if (DEBUG || DEBUG_WARNS) {
-            LOG("ERR: unable to close output stream");
+            LOG("ERR: unable to flush alloc stream");
             e.printStackTrace();
           }
         }
       }
     }
   }
+
   public static synchronized void LOG(String msg) {
     System.err.println("[olr-ar] " + msg);
+  }
+
+  private static int hashStackTrace(StackTraceElement[] st) {
+    int result = 37;
+    try {
+      for (StackTraceElement ste : st) {
+        result = 37*result + ste.hashCode();
+      }
+    } catch (Exception e) {
+      if (DEBUG || DEBUG_WARNS) {
+        LOG("ERR: hash stack trace:");
+        e.printStackTrace();
+      }
+    }
+    return result;
   }
 
   public static void recordAllocation(Class<?> cls, Object newObj) {
@@ -141,22 +193,30 @@ public class AllocationRecorder {
     // instrumentation.getObjectSize()
     Instrumentation instr = instrumentation;
     if (instr != null) {
-        // TODO - check if we can strip down the amount of serialized data.
-      AllocationRecord ar = new AllocationRecord(System.identityHashCode(newObj));
-      ObjectOutputStream oos = outputStream.get();
+      StackTraceElement[] st = Thread.currentThread().getStackTrace();
+      int objID = System.identityHashCode(newObj);
+      int stID = hashStackTrace(st);
+
+      // Add trace if it does not exist already.
+      if (traces.putIfAbsent(stID, st) == null && (DEBUG || DEBUG_WARNS)) {
+        LOG("WARN: traces might already contains " + stID);
+      }
+
+      // Create oos if it does not exist already.
+      ObjectOutputStream oos = allocStream.get();
       try {
         if (oos == null) {
           String output = OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId();
           oos = new ObjectOutputStream(
                   // TODO - intruduce buffered output steam in between.
                   new FileOutputStream(output, true));
-          outputStream.set(oos);
-          addOutputStream(oos);
-          if (DEBUG || DEBUG_ALLOCS) {
-            LOG("new output steam in " + output);
-          }
+          allocStream.set(oos);
+          addAllocStreams(oos);
         }
-        oos.writeObject(ar);
+
+        // Write objID and stID to stream (32 + 32 bits)
+        oos.writeInt(objID);
+        oos.writeInt(stID);
       } catch (Exception e) {
         if (DEBUG || DEBUG_WARNS) {
           LOG(String.format("ERR: unable to write to output stream for thread %d",
@@ -166,8 +226,8 @@ public class AllocationRecorder {
       }
 
       if (DEBUG || DEBUG_ALLOCS) {
-        LOG(String.format("st=%d\tobj=%d\tcount=%d\tdesc=%sin=%s",
-           ar.getTraceHash(), ar.getObjHash(), count, desc, OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId()));
+        LOG(String.format("st=%d\tobj=%d\tcount=%d\tdesc=%s\tin=Thread-%d",
+           stID, objID, count, desc, Thread.currentThread().getId()));
       }
     }
 
