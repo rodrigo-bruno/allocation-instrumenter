@@ -19,6 +19,8 @@ package com.google.monitoring.runtime.instrumentation;
 import java.io.FileOutputStream;
 import java.io.ObjectOutputStream;
 import java.lang.instrument.Instrumentation;
+import java.util.List;
+import java.util.LinkedList;
 
 /**
  * The logic for recording allocations, called from bytecode rewritten by
@@ -41,20 +43,18 @@ public class AllocationRecorder {
     Runtime.getRuntime().addShutdownHook(new Thread() {
       @Override
       public void run() {
+        LOG("running shutdown hook...");
         setInstrumentation(null);
+        closeOutputSteams();
+        LOG("running shutdown hook...Done");
       }
     });
   }
 
   // Debug flags
   protected static final boolean DEBUG = true;
-  protected static final boolean DEBUG_STATS = true;
   protected static final boolean DEBUG_ALLOCS = true;
-  protected static final boolean DEBUG_WORKER = true;
   protected static final boolean DEBUG_WARNS = true;
-
-  // TODO - comment on this.
-  protected static final int BUFF_SIZE = 1024*1024;
 
   // Where alloc statistics are going to be placed.
   protected static String OUTPUT_DIR = "/tmp";
@@ -77,6 +77,34 @@ public class AllocationRecorder {
   // Each thread contains an object stream.
   public static final ThreadLocal<ObjectOutputStream> outputStream = new ThreadLocal<ObjectOutputStream>();
 
+  public static final List<ObjectOutputStream> outputStreams;
+
+  static {
+    outputStreams = new LinkedList<ObjectOutputStream>();
+  }
+
+  public static void addOutputStream(ObjectOutputStream oos) {
+    synchronized (outputStreams) {
+      outputStreams.add(oos);
+    }
+  }
+
+  public static void closeOutputSteams() {
+    synchronized (outputStreams) {
+      for (ObjectOutputStream oos : outputStreams) {
+        try {
+          oos.flush();
+          oos.close();
+        }
+        catch (Exception e) {
+          if (DEBUG || DEBUG_WARNS) {
+            LOG("ERR: unable to close output stream");
+            e.printStackTrace();
+          }
+        }
+      }
+    }
+  }
   public static synchronized void LOG(String msg) {
     System.err.println("[olr-ar] " + msg);
   }
@@ -114,16 +142,19 @@ public class AllocationRecorder {
     Instrumentation instr = instrumentation;
     if (instr != null) {
         // TODO - check if we can strip down the amount of serialized data.
-        // TODO - maintain a list oos to close?
       AllocationRecord ar = new AllocationRecord(System.identityHashCode(newObj));
       ObjectOutputStream oos = outputStream.get();
       try {
         if (oos == null) {
+          String output = OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId();
           oos = new ObjectOutputStream(
-                  new FileOutputStream(
-                          OUTPUT_DIR + "/" + Thread.currentThread().getId(),
-                          true));
+                  // TODO - intruduce buffered output steam in between.
+                  new FileOutputStream(output, true));
           outputStream.set(oos);
+          addOutputStream(oos);
+          if (DEBUG || DEBUG_ALLOCS) {
+            LOG("new output steam in " + output);
+          }
         }
         oos.writeObject(ar);
       } catch (Exception e) {
@@ -135,8 +166,8 @@ public class AllocationRecorder {
       }
 
       if (DEBUG || DEBUG_ALLOCS) {
-        LOG(String.format("st=%d\tobj=%d\tcount=%d\tdesc=%s",
-           ar.getTraceHash(), ar.getObjHash(), count, desc));
+        LOG(String.format("st=%d\tobj=%d\tcount=%d\tdesc=%sin=%s",
+           ar.getTraceHash(), ar.getObjHash(), count, desc, OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId()));
       }
     }
 
