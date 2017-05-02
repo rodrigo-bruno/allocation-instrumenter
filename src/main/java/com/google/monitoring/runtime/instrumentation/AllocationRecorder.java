@@ -106,13 +106,14 @@ public class AllocationRecorder {
   }
 
   public static void flushTraces() {
-    String output = OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId();
+    String output = OUTPUT_DIR + "/olr-ar-traces";
     try {
       ObjectOutputStream oos =
             new ObjectOutputStream(
                   new FileOutputStream(output));
       for (Entry<Integer, StackTraceElement[]> e : traces.entrySet()) {
-        oos.writeObject(e);
+        oos.write(e.getKey());
+        oos.writeObject(e.getValue());
       }
       oos.flush();
       oos.close();
@@ -198,9 +199,7 @@ public class AllocationRecorder {
       int stID = hashStackTrace(st);
 
       // Add trace if it does not exist already.
-      if (traces.putIfAbsent(stID, st) == null && (DEBUG || DEBUG_WARNS)) {
-        LOG("WARN: traces might already contains " + stID);
-      }
+      traces.putIfAbsent(stID, st);
 
       // Create oos if it does not exist already.
       ObjectOutputStream oos = allocStream.get();
