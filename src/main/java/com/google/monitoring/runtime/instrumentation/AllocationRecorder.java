@@ -111,10 +111,7 @@ public class AllocationRecorder {
       ObjectOutputStream oos =
             new ObjectOutputStream(
                   new FileOutputStream(output));
-      for (Entry<Integer, StackTraceElement[]> e : traces.entrySet()) {
-        oos.write(e.getKey());
-        oos.writeObject(e.getValue());
-      }
+      oos.writeObject(traces);
       oos.flush();
       oos.close();
     }
