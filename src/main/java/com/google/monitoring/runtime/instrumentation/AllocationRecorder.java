@@ -146,14 +146,15 @@ public class AllocationRecorder {
 
   private static int hashStackTrace(StackTraceElement[] st) {
     int result = 37;
-    try {
-      for (StackTraceElement ste : st) {
+    for (StackTraceElement ste : st) {
+      try {
         result = 37*result + ste.hashCode();
       }
-    } catch (Exception e) {
-      if (DEBUG || DEBUG_WARNS) {
-        LOG("ERR: hash stack trace:");
-        e.printStackTrace();
+      catch (Exception e) {
+        if (DEBUG || DEBUG_WARNS) {
+          LOG("WARN: failed to get hashCode for " + ste);
+        }
+        return 0;
       }
     }
     return result;
@@ -194,6 +195,12 @@ public class AllocationRecorder {
       StackTraceElement[] st = Thread.currentThread().getStackTrace();
       int objID = System.identityHashCode(newObj);
       int stID = hashStackTrace(st);
+
+      if (stID == 0) {
+        LOG("WARN: avoided stack trace with stID = " + stID);
+        recordingAllocation.set(Boolean.FALSE);
+        return;
+      }
 
       // Add trace if it does not exist already.
       traces.putIfAbsent(stID, st);
