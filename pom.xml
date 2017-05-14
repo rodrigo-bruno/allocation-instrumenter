@@ -30,7 +30,7 @@
   <packaging>jar</packaging>
   <version>3.0-SNAPSHOT</version>
 
-  <name>java-allocation-instrumenter</name>
+  <name>olr-ap</name>
   <description>
     A Java agent that rewrites bytecode to instrument allocation sites.
   </description>

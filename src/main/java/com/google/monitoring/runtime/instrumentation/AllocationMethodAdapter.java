@@ -16,6 +16,7 @@
 
 package com.google.monitoring.runtime.instrumentation;
 
+import java.util.HashMap;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
@@ -93,8 +94,10 @@ class AllocationMethodAdapter extends MethodVisitor {
     return localScopes;
   }
 
+  private final HashMap<Integer, InstRequest> instrRequests;
   private final String recorderClass;
   private final String recorderMethod;
+  private int lineno;
 
   /**
    * The LocalVariablesSorter used in this adapter.  Lame that it's public but
@@ -108,11 +111,23 @@ class AllocationMethodAdapter extends MethodVisitor {
   /**
    * A new AllocationMethodAdapter is created for each method that gets visited.
    */
-  public AllocationMethodAdapter(MethodVisitor mv, String recorderClass,
-                         String recorderMethod) {
+  public AllocationMethodAdapter(MethodVisitor mv,
+          HashMap<Integer, InstRequest> instrRequests,
+          String recorderClass,
+          String recorderMethod) {
     super(Opcodes.ASM5, mv);
+    this.instrRequests = instrRequests;
     this.recorderClass = recorderClass;
     this.recorderMethod = recorderMethod;
+    this.lineno = 0;
+  }
+
+  /**
+   * Used to track line numbers of the current method.
+   */
+  @Override
+  public void visitLineNumber(int line, Label start) {
+      lineno = line;
   }
 
   /**
@@ -125,6 +140,7 @@ class AllocationMethodAdapter extends MethodVisitor {
       // instack: ... count
       // outstack: ... aref
       if (operand >= 4 && operand <= 11) {
+          System.out.println("Visiting NEWARRAY at " + lineno);
         super.visitInsn(Opcodes.DUP); // -> stack: ... count count
         super.visitIntInsn(opcode, operand); // -> stack: ... count aref
         invokeRecordAllocation(primitiveTypeNames[operand]);
@@ -455,6 +471,7 @@ class AllocationMethodAdapter extends MethodVisitor {
   @Override
   public void visitTypeInsn(int opcode, String typeName) {
     if (opcode == Opcodes.NEW) {
+        System.out.println("Visiting NEW at " + lineno);
       // We can't actually tag this object right after allocation because it
       // must be initialized with a ctor before we can touch it (Verifier
       // enforces this).  Instead, we just note it and tag following
@@ -462,6 +479,7 @@ class AllocationMethodAdapter extends MethodVisitor {
       super.visitTypeInsn(opcode, typeName);
       ++outstandingAllocs;
     } else if (opcode == Opcodes.ANEWARRAY) {
+        System.out.println("Visiting ANEWARRAY at " + lineno);
       super.visitInsn(Opcodes.DUP);
       super.visitTypeInsn(opcode, typeName);
       invokeRecordAllocation(typeName);

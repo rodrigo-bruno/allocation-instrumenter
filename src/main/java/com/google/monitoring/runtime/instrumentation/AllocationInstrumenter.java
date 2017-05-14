@@ -16,6 +16,8 @@
 
 package com.google.monitoring.runtime.instrumentation;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
@@ -26,6 +28,7 @@ import java.lang.instrument.UnmodifiableClassException;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -51,6 +54,12 @@ public class AllocationInstrumenter implements ClassFileTransformer {
   // guarantee programmatically.
   private static volatile boolean canRewriteBootstrap;
 
+  /**
+   * <class name, map<method name, map<lineno, request>>>.
+   */
+  protected static HashMap<String, HashMap<String, HashMap<Integer, InstRequest>>> instrRequests =
+          new HashMap<String, HashMap<String, HashMap<Integer, InstRequest>>>();
+
   static boolean canRewriteClass(String className, ClassLoader loader) {
     // There are two conditions under which we don't rewrite:
     //  1. If className was loaded by the bootstrap class loader and
@@ -68,6 +77,47 @@ public class AllocationInstrumenter implements ClassFileTransformer {
     }
 
     return true;
+  }
+
+  static void loadInstRequests(String path) {
+    BufferedReader br = null;
+    String line = null;
+    try {
+      br = new BufferedReader(new FileReader(path));
+      while ((line = br.readLine()) != null) {
+        String[] splits = line.split(" ");
+        int gen = Integer.parseInt(splits[0].split("=")[1]);
+        String ste = splits[1].split("=")[1].replaceAll("[()]", " ");
+        String class_method = ste.split(" ")[0];
+        Integer source = Integer.parseInt(ste.split(" ")[1].split(":")[1]);
+        String className = class_method.substring(0, class_method.lastIndexOf(".")).replace(".", "/");
+        String methodName = class_method.substring(class_method.lastIndexOf(".") + 1);
+
+        if (!instrRequests.containsKey(className)) {
+            instrRequests.put(className, new HashMap<String, HashMap<Integer, InstRequest>>());
+        }
+        if (!instrRequests.get(className).containsKey(methodName)) {
+            instrRequests.get(className).put(methodName, new HashMap<Integer, InstRequest>());
+        }
+
+        // TODO - make a decent inst request!
+        instrRequests.get(className).get(methodName).put(source, new InstRequest());
+
+        // TODO - logging?
+        System.out.println("Gen = " + gen);
+        System.out.println("Class = " + className);
+        System.out.println("Method = " + methodName);
+        System.out.println("Line = " + source);
+      }
+    } catch (Exception e) {
+        e.printStackTrace();
+    } finally {
+        try {
+          if (br != null) {
+            br.close();
+          }
+        } catch (Exception e) {}
+    }
   }
 
   // No instantiating me except in premain() or in {@link JarClassTransformer}.
@@ -108,12 +158,7 @@ public class AllocationInstrumenter implements ClassFileTransformer {
     List<String> args = Arrays.asList(
         agentArgs == null ? new String[0] : agentArgs.split(","));
 
-    // When "subclassesAlso" is specified, samplers are also invoked when
-    // SubclassOfA.<init> is called while only class A is specified to be
-    // instrumented.
-    ConstructorInstrumenter.subclassesAlso = args.contains("subclassesAlso");
-    inst.addTransformer(new ConstructorInstrumenter(),
-        inst.isRetransformClassesSupported());
+    loadInstRequests(args.get(0));
 
     if (!args.contains("manualOnly")) {
       bootstrap(inst);
@@ -182,10 +227,17 @@ public class AllocationInstrumenter implements ClassFileTransformer {
       ClassWriter cw =
           new StaticClassWriter(cr, ClassWriter.COMPUTE_FRAMES, loader);
 
+      // Skip not requested classes.
+      if (!instrRequests.containsKey(cr.getClassName())) {
+          return originalBytes;
+      }
+
+      System.out.println("Instrumenting " + cr.getClassName()); // DEBUG
+
       VerifyingClassAdapter vcw =
           new VerifyingClassAdapter(cw, originalBytes, cr.getClassName());
       ClassVisitor adapter =
-          new AllocationClassAdapter(vcw, recorderClass, recorderMethod);
+          new AllocationClassAdapter(vcw, instrRequests.get(cr.getClassName()), recorderClass, recorderMethod);
 
       cr.accept(adapter, ClassReader.SKIP_FRAMES);
 

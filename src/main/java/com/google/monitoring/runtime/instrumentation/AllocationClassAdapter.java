@@ -16,6 +16,7 @@
 
 package com.google.monitoring.runtime.instrumentation;
 
+import java.util.HashMap;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
@@ -33,12 +34,16 @@ import org.objectweb.asm.commons.JSRInlinerAdapter;
 class AllocationClassAdapter extends ClassVisitor {
   private final String recorderClass;
   private final String recorderMethod;
+  private final HashMap<String, HashMap<Integer, InstRequest>> instRequests;
 
-  public AllocationClassAdapter(ClassVisitor cv, String recorderClass,
-      String recorderMethod) {
+  public AllocationClassAdapter(ClassVisitor cv,
+          HashMap<String, HashMap<Integer, InstRequest>> instRequests,
+          String recorderClass,
+          String recorderMethod) {
     super(Opcodes.ASM5, cv);
     this.recorderClass = recorderClass;
     this.recorderMethod = recorderMethod;
+    this.instRequests = instRequests;
   }
 
   /**
@@ -52,7 +57,9 @@ class AllocationClassAdapter extends ClassVisitor {
     MethodVisitor mv =
       cv.visitMethod(access, base, desc, signature, exceptions);
 
-    if (mv != null) {
+    // Note: checking if method should be instrumented or not.
+    if (mv != null && instRequests.containsKey(base)) {
+      System.out.println("Visiting method " + String.format("%s %s %s", base, desc, signature)); // DEBUG
       // We need to compute stackmaps (see
       // AllocationInstrumenter#instrument).  This can't really be
       // done for old bytecode that contains JSR and RET instructions.
@@ -60,7 +67,7 @@ class AllocationClassAdapter extends ClassVisitor {
       JSRInlinerAdapter jsria = new JSRInlinerAdapter(
           mv, access, base, desc, signature, exceptions);
       AllocationMethodAdapter aimv =
-        new AllocationMethodAdapter(jsria, recorderClass, recorderMethod);
+        new AllocationMethodAdapter(jsria, instRequests.get(base), recorderClass, recorderMethod);
       LocalVariablesSorter lvs = new LocalVariablesSorter(access, desc, aimv);
       aimv.lvs = lvs;
       mv = lvs;
