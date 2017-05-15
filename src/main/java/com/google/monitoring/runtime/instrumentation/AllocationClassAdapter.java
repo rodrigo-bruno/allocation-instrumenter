@@ -32,17 +32,11 @@ import org.objectweb.asm.commons.JSRInlinerAdapter;
  * @author fischman@google.com (Ami Fischman) (Original Author)
  */
 class AllocationClassAdapter extends ClassVisitor {
-  private final String recorderClass;
-  private final String recorderMethod;
   private final HashMap<String, HashMap<Integer, InstRequest>> instRequests;
 
   public AllocationClassAdapter(ClassVisitor cv,
-          HashMap<String, HashMap<Integer, InstRequest>> instRequests,
-          String recorderClass,
-          String recorderMethod) {
+          HashMap<String, HashMap<Integer, InstRequest>> instRequests) {
     super(Opcodes.ASM5, cv);
-    this.recorderClass = recorderClass;
-    this.recorderMethod = recorderMethod;
     this.instRequests = instRequests;
   }
 
@@ -67,7 +61,7 @@ class AllocationClassAdapter extends ClassVisitor {
       JSRInlinerAdapter jsria = new JSRInlinerAdapter(
           mv, access, base, desc, signature, exceptions);
       AllocationMethodAdapter aimv =
-        new AllocationMethodAdapter(jsria, instRequests.get(base), recorderClass, recorderMethod);
+        new AllocationMethodAdapter(jsria, instRequests.get(base));
       LocalVariablesSorter lvs = new LocalVariablesSorter(access, desc, aimv);
       aimv.lvs = lvs;
       mv = lvs;

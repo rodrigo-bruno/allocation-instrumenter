@@ -15,14 +15,17 @@
  */
 package com.google.monitoring.runtime.instrumentation;
 
-/**
- *
- * @author rbruno
- */
 public class InstRequest {
+
+    private final int gen;
     // TODO - enum type
     // argument
     // @Gen, newGen?, setGen, getGen?
-    
-    
+    public InstRequest(int gen) {
+        this.gen = gen;
+    }
+
+    public int gen() {
+        return gen;
+    }
 }

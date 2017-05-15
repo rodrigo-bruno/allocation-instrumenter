@@ -82,6 +82,7 @@ public class AllocationInstrumenter implements ClassFileTransformer {
   static void loadInstRequests(String path) {
     BufferedReader br = null;
     String line = null;
+    int maxGen = 0;
     try {
       br = new BufferedReader(new FileReader(path));
       while ((line = br.readLine()) != null) {
@@ -100,8 +101,9 @@ public class AllocationInstrumenter implements ClassFileTransformer {
             instrRequests.get(className).put(methodName, new HashMap<Integer, InstRequest>());
         }
 
-        // TODO - make a decent inst request!
-        instrRequests.get(className).get(methodName).put(source, new InstRequest());
+        instrRequests.get(className).get(methodName).put(source, new InstRequest(gen));
+
+        maxGen = gen > maxGen ? gen : maxGen;
 
         // TODO - logging?
         System.out.println("Gen = " + gen);
@@ -118,13 +120,18 @@ public class AllocationInstrumenter implements ClassFileTransformer {
           }
         } catch (Exception e) {}
     }
+
+    // Note: creating new generations for the application.
+    for (int i = 0; i < maxGen; i++) {
+        System.newAllocGen();
+    }
+
   }
 
   // No instantiating me except in premain() or in {@link JarClassTransformer}.
   AllocationInstrumenter() { }
 
   public static void premain(String agentArgs, Instrumentation inst) {
-    AllocationRecorder.setInstrumentation(inst);
 
     // Force eager class loading here; we need these classes in order to do
     // instrumentation, so if we don't do the eager class loading, we
@@ -141,17 +148,6 @@ public class AllocationInstrumenter implements ClassFileTransformer {
     if (!inst.isRetransformClassesSupported()) {
       System.err.println("Some JDK classes are already loaded and " +
           "will not be instrumented.");
-    }
-
-    // Don't try to rewrite classes loaded by the bootstrap class
-    // loader if this class wasn't loaded by the bootstrap class
-    // loader.
-    if (AllocationRecorder.class.getClassLoader() != null) {
-      canRewriteBootstrap = false;
-      // The loggers aren't installed yet, so we use println.
-      System.err.println("Class loading breakage: " +
-          "Will not be able to instrument JDK classes");
-      return;
     }
 
     canRewriteBootstrap = true;
@@ -211,15 +207,10 @@ public class AllocationInstrumenter implements ClassFileTransformer {
    * reflection API's Array.newInstance() and instrument those too.
    *
    * @param originalBytes the original <code>byte[]</code> code.
-   * @param recorderClass the <code>String</code> internal name of the class
-   * containing the recorder method to run.
-   * @param recorderMethod the <code>String</code> name of the recorder method
-   * to run.
    * @param loader the <code>ClassLoader</code> for this class.
    * @return the instrumented <code>byte[]</code> code.
    */
-  public static byte[] instrument(byte[] originalBytes, String recorderClass,
-      String recorderMethod, ClassLoader loader) {
+  public static byte[] instrument(byte[] originalBytes, ClassLoader loader) {
     try {
       ClassReader cr = new ClassReader(originalBytes);
       // The verifier in JDK7+ requires accurate stackmaps, so we use
@@ -229,6 +220,7 @@ public class AllocationInstrumenter implements ClassFileTransformer {
 
       // Skip not requested classes.
       if (!instrRequests.containsKey(cr.getClassName())) {
+          // System.out.println("NOT Instrumenting " + cr.getClassName()); // DEBUG
           return originalBytes;
       }
 
@@ -237,7 +229,7 @@ public class AllocationInstrumenter implements ClassFileTransformer {
       VerifyingClassAdapter vcw =
           new VerifyingClassAdapter(cw, originalBytes, cr.getClassName());
       ClassVisitor adapter =
-          new AllocationClassAdapter(vcw, instrRequests.get(cr.getClassName()), recorderClass, recorderMethod);
+          new AllocationClassAdapter(vcw, instrRequests.get(cr.getClassName()));
 
       cr.accept(adapter, ClassReader.SKIP_FRAMES);
 
@@ -249,22 +241,5 @@ public class AllocationInstrumenter implements ClassFileTransformer {
       logger.log(Level.WARNING, "Failed to instrument class.", e);
       throw e;
     }
-  }
-
-
-  /**
-   * @see #instrument(byte[], String, String, ClassLoader)
-   * documentation for the 4-arg version.  This is a convenience
-   * version that uses the recorder in this class.
-   * @param originalBytes The original version of the class.
-   * @param loader The ClassLoader of this class.
-   * @return the instrumented version of this class.
-   */
-  public static byte[] instrument(byte[] originalBytes, ClassLoader loader) {
-    return instrument(
-        originalBytes,
-        "com/google/monitoring/runtime/instrumentation/AllocationRecorder",
-        "recordAllocation",
-        loader);
   }
 }
