@@ -19,6 +19,7 @@ package com.google.monitoring.runtime.instrumentation;
 import java.io.FileOutputStream;
 import java.io.ObjectOutputStream;
 import java.io.DataOutputStream;
+import java.io.BufferedOutputStream;
 import java.lang.instrument.Instrumentation;
 import java.util.List;
 import java.util.LinkedList;
@@ -62,9 +63,9 @@ public class AllocationRecorder {
   }
 
   // Debug flags
-  protected static final boolean DEBUG = true;
-  protected static final boolean DEBUG_ALLOCS = true;
-  protected static final boolean DEBUG_WARNS = true;
+  protected static final boolean DEBUG = false;
+  protected static final boolean DEBUG_ALLOCS = false;
+  protected static final boolean DEBUG_WARNS = false;
 
   // Where alloc statistics are going to be placed by default.
   protected static String OUTPUT_DIR = "/tmp";
@@ -213,8 +214,8 @@ public class AllocationRecorder {
         if (oos == null) {
           String output = OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId();
           oos = new DataOutputStream(
-                  // TODO - intruduce buffered output steam in between.
-                  new FileOutputStream(output, true));
+                  new BufferedOutputStream(
+                    new FileOutputStream(output, true)));
           allocStream.set(oos);
           addAllocStreams(oos);
           LOG("Creating " + OUTPUT_DIR + "/olr-ar-" + Thread.currentThread().getId() + " (" + oos + ")" );
