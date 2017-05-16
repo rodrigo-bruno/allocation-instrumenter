@@ -187,6 +187,12 @@ public class AllocationInstrumenter implements ClassFileTransformer {
       ClassWriter cw =
           new StaticClassWriter(cr, ClassWriter.COMPUTE_FRAMES, loader);
 
+      // Note: avoid rewritting code that belongs to the profiler.
+      if (cr.getClassName().startsWith("org/objectweb/asm") ||
+          cr.getClassName().startsWith("com/google/monitoring/runtime/instrumentation")) {
+          return originalBytes;
+      }
+
       VerifyingClassAdapter vcw =
           new VerifyingClassAdapter(cw, originalBytes, cr.getClassName());
       ClassVisitor adapter =
